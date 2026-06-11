@@ -79,8 +79,11 @@ export class AlertService {
       );
       pushes.push(push);
 
+      const pushIdCopy = push.id;
       setTimeout(() => {
-        this.simulatePush(push.id);
+        this.simulatePush(pushIdCopy).catch(err => {
+          console.error(`[AlertService] simulatePush failed for push ${pushIdCopy}:`, err?.message || err);
+        });
       }, 100);
     }
 

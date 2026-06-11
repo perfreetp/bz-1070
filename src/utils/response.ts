@@ -34,12 +34,21 @@ export function successResponse<T>(res: Response, data: T, message: string = 'su
 export function errorResponse(res: Response, error: AppError | Error): Response<ApiResponse> {
   const statusCode = (error as AppError).statusCode || 500;
   const isOperational = (error as AppError).isOperational || false;
+  const errorCode = (error as AppError).code;
 
   const response: ApiResponse = {
     code: statusCode,
     message: isOperational ? error.message : 'Internal Server Error',
     timestamp: Date.now()
   };
+
+  if (errorCode) {
+    (response as any).errorCode = errorCode;
+  }
+
+  if ((error as any).details && Array.isArray((error as any).details)) {
+    (response as any).details = (error as any).details;
+  }
 
   if (process.env.NODE_ENV === 'development' && !isOperational) {
     (response as any).stack = error.stack;

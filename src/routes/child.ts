@@ -127,18 +127,22 @@ router.post(
     try {
       const {
         name, gender, birthDate, idCardNumber, avatar, height, weight,
-        bloodType, healthInfo, address, organizationId, studentId, class: className, grade
+        bloodType, healthInfo, address, studentId, class: className, grade
       } = req.body;
 
-      if ((req.user!.role === 'school_admin' || req.user!.role === 'scenic_admin')) {
-        if (!organizationId && req.user!.organizationId) {
-          req.body.organizationId = req.user!.organizationId;
-        }
+      let finalOrganizationId: string | undefined;
+
+      if (req.user!.role === 'parent') {
+        finalOrganizationId = undefined;
+      } else if ((req.user!.role === 'school_admin' || req.user!.role === 'scenic_admin') && req.user!.organizationId) {
+        finalOrganizationId = req.user!.organizationId;
+      } else if (req.user!.role === 'system_admin') {
+        finalOrganizationId = req.body.organizationId;
       }
 
       const child = await Child.create({
         name, gender, birthDate, idCardNumber, avatar, height, weight,
-        bloodType, healthInfo, address, organizationId: organizationId || req.user!.organizationId,
+        bloodType, healthInfo, address, organizationId: finalOrganizationId,
         studentId, class: className, grade
       });
 
@@ -190,9 +194,12 @@ router.put(
         }
       }
 
-      const updateData = { ...req.body };
-      if (updateData.class) {
-        updateData.class = updateData.class;
+      const allowedFields = ['name', 'gender', 'birthDate', 'idCardNumber', 'avatar', 'height', 'weight', 'bloodType', 'healthInfo', 'address', 'organizationId', 'studentId', 'class', 'grade', 'status'];
+      const updateData: any = {};
+      for (const field of allowedFields) {
+        if (req.body[field] !== undefined) {
+          updateData[field] = req.body[field];
+        }
       }
 
       await child.update(updateData);

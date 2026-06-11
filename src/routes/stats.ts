@@ -3,7 +3,7 @@ import { query, param } from 'express-validator';
 import { validate } from '../middleware/validation';
 import { authenticate, requireRole } from '../middleware/auth';
 import { successResponse, AppError } from '../utils/response';
-import { Child, CheckInRecord, Organization, Alert } from '../database/associations';
+import { Child, CheckInRecord, Organization, Alert, Device } from '../database/associations';
 import { Op, fn, col, literal } from 'sequelize';
 
 const router = Router();
@@ -205,10 +205,11 @@ router.get(
         if (enters.length > 0 && exits.length === 0) childStatus = 'in_camp';
         else if (exits.length > 0) childStatus = 'left';
 
+        const HIGH_RISK_TYPES = ['geofence_exit', 'tamper', 'missing', 'sos'];
         const childAlerts = await Alert.count({
           where: {
             childId: child.id,
-            type: ['geofence_exit', 'tamper', 'missing', 'sos'],
+            type: { [Op.in]: HIGH_RISK_TYPES },
             createdAt: { [Op.between]: [dayStart, dayEnd] }
           }
         });
@@ -350,7 +351,7 @@ router.get(
       const [orgCount, childCount, deviceCount, todayAlerts, pendingAlerts] = await Promise.all([
         Organization.count({ where: { ...orgWhere, status: 'active' } }),
         Child.count({ where: { ...childWhere, status: 'normal' } }),
-        (await import('../database/associations')).Device.count({ where: { bindStatus: 'bound' } }),
+        Device.count({ where: { bindStatus: 'bound' } }),
         Alert.count({
           include: childWhere.organizationId ? [{
             association: 'child',

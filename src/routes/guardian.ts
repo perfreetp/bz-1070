@@ -323,14 +323,20 @@ router.put(
         throw new AppError('不能取消主监护人身份', 400);
       }
 
-      const updateData = { ...req.body };
+      const allowedFields = ['relation', 'canPickup', 'canReceiveAlerts', 'canViewLocation', 'canManage', 'expiresAt', 'status'];
+      const updateData: any = {};
+      for (const field of allowedFields) {
+        if (req.body[field] !== undefined) {
+          updateData[field] = req.body[field];
+        }
+      }
 
       if (updateData.canPickup === true && !guardian.pickupQrCode) {
         updateData.pickupQrCode = generatePickupQrCode(guardian.childId, guardian.userId);
       }
 
       if (updateData.canPickup === false) {
-        updateData.pickupQrCode = undefined;
+        updateData.pickupQrCode = null as any;
       }
 
       await guardian.update(updateData);
@@ -369,12 +375,13 @@ router.post(
         throw new AppError('该亲友未开启接送权限，请先开启后再生成接送码', 400, 'PICKUP_DISABLED');
       }
 
+      const oldQrCode = guardian.pickupQrCode;
       const newQrCode = generatePickupQrCode(guardian.childId, guardian.userId);
       await guardian.update({ pickupQrCode: newQrCode });
 
       return successResponse(res, {
         guardianId: guardian.id,
-        oldPickupQrCode: guardian.pickupQrCode,
+        oldPickupQrCode: oldQrCode,
         newPickupQrCode: newQrCode,
         user: (guardian as any).user,
         expiresAt: guardian.expiresAt,

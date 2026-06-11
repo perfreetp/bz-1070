@@ -171,7 +171,15 @@ router.put(
         }
       }
 
-      await geofence.update(req.body);
+      const allowedFields = ['name', 'type', 'shape', 'latitude', 'longitude', 'radius', 'polygonPoints', 'address', 'isActive', 'notifyOnEnter', 'notifyOnExit', 'scheduleStart', 'scheduleEnd', 'weekdays'];
+      const updateData: any = {};
+      for (const field of allowedFields) {
+        if (req.body[field] !== undefined) {
+          updateData[field] = req.body[field];
+        }
+      }
+
+      await geofence.update(updateData);
       return successResponse(res, geofence, '围栏更新成功');
     } catch (error) {
       next(error);

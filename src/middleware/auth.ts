@@ -43,12 +43,17 @@ export function requireRole(...roles: string[]) {
 }
 
 export function deviceAuth(req: Request, res: Response, next: NextFunction): void {
-  const deviceToken = req.headers['x-device-token'] || req.headers['device-token'];
+  const deviceToken = (req.headers['x-device-token'] || req.headers['device-token']) as string | undefined;
 
-  if (!deviceToken) {
+  if (!deviceToken || typeof deviceToken !== 'string') {
     return next(new AppError('Missing device authentication token', 401, 'DEVICE_AUTH_MISSING'));
   }
 
-  (req as any).deviceToken = deviceToken;
+  const safeToken = deviceToken.trim().slice(0, 256);
+  if (safeToken.length === 0) {
+    return next(new AppError('Invalid device authentication token', 401, 'DEVICE_AUTH_INVALID'));
+  }
+
+  (req as any).deviceToken = safeToken;
   next();
 }

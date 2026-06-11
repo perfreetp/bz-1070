@@ -4,6 +4,7 @@ import { validate, getPaginationParams } from '../middleware/validation';
 import { authenticate, requireRole, deviceAuth } from '../middleware/auth';
 import { successResponse, AppError, paginatedResponse } from '../utils/response';
 import { Device, Child, Guardian, Location, Alert, CheckInRecord } from '../database/associations';
+import { AlertService } from '../services/AlertService';
 import { Op, Transaction } from 'sequelize';
 import sequelize from '../database';
 
@@ -111,7 +112,9 @@ router.post(
     try {
       const { deviceId, deviceType, model, manufacturer, firmwareVersion, imei, simNumber } = req.body;
 
-      const existing = await Device.findOne({ where: { [Op.or]: [{ deviceId }, { imei: imei || '' }] } });
+      const dupWhere: any[] = [{ deviceId }];
+      if (imei) dupWhere.push({ imei });
+      const existing = await Device.findOne({ where: { [Op.or]: dupWhere } });
       if (existing) throw new AppError('设备ID或IMEI已存在', 400);
 
       const device = await Device.create({
@@ -324,14 +327,14 @@ router.put(
       await device.update({ status: 'tampered' });
 
       if (device.childId) {
-        const { AlertService } = await import('../services/AlertService');
+        const tamperDesc = tamperType === 'detached' ? '被摘下' : tamperType === 'opened' ? '被拆开' : '被关机';
         await AlertService.createAlert({
           childId: device.childId,
           deviceId: device.id,
           type: 'tamper',
           level: 'danger',
           title: '设备拆卸告警',
-          content: `检测到设备${tamperType === 'detached' ? '被摘下' : tamperType === 'opened' ? '被拆开' : '被关机'}，请立即确认儿童安全`,
+          content: `检测到设备${tamperDesc}，请立即确认儿童安全`,
           latitude,
           longitude,
           triggerValue: tamperType
@@ -359,7 +362,15 @@ router.put(
         throw new AppError('家长无权限修改设备信息', 403);
       }
 
-      await device.update(req.body);
+      const allowedFields = ['deviceType', 'model', 'manufacturer', 'firmwareVersion', 'imei', 'simNumber', 'status', 'batteryLevel', 'signalStrength', 'lastOnlineAt'];
+      const updateData: any = {};
+      for (const field of allowedFields) {
+        if (req.body[field] !== undefined) {
+          updateData[field] = req.body[field];
+        }
+      }
+
+      await device.update(updateData);
       return successResponse(res, device, '设备信息更新成功');
     } catch (error) {
       next(error);

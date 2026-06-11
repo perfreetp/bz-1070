@@ -89,9 +89,10 @@ router.get(
         order: [['createdAt', 'DESC']]
       });
 
+      const HIGH_RISK_TYPES = ['geofence_exit', 'tamper', 'missing', 'sos'];
+
       const abnormalCount = todayAlerts.filter(a =>
-        ['geofence_exit', 'tamper', 'missing', 'sos'].includes(a.type) &&
-        a.status === 'pending'
+        HIGH_RISK_TYPES.includes(a.type)
       ).reduce((acc, cur) => {
         if (!acc.includes(cur.childId)) acc.push(cur.childId);
         return acc;
@@ -103,7 +104,7 @@ router.get(
       }, {});
 
       const abnormalChildren = todayAlerts
-        .filter(a => a.status === 'pending')
+        .filter(a => HIGH_RISK_TYPES.includes(a.type))
         .reduce((acc: any[], cur) => {
           const existing = acc.find(c => c.childId === cur.childId);
           if (!existing) {
@@ -111,11 +112,15 @@ router.get(
               childId: cur.childId,
               childName: (cur as any).child?.name,
               alertTypes: [cur.type],
-              levels: [cur.level]
+              levels: [cur.level],
+              statuses: [cur.status],
+              hasUnresolved: cur.status === 'pending' || cur.status === 'processing'
             });
           } else {
             if (!existing.alertTypes.includes(cur.type)) existing.alertTypes.push(cur.type);
             if (!existing.levels.includes(cur.level)) existing.levels.push(cur.level);
+            if (!existing.statuses.includes(cur.status)) existing.statuses.push(cur.status);
+            if (cur.status === 'pending' || cur.status === 'processing') existing.hasUnresolved = true;
           }
           return acc;
         }, []);
@@ -203,7 +208,6 @@ router.get(
         const childAlerts = await Alert.count({
           where: {
             childId: child.id,
-            status: 'pending',
             type: ['geofence_exit', 'tamper', 'missing', 'sos'],
             createdAt: { [Op.between]: [dayStart, dayEnd] }
           }

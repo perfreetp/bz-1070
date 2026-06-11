@@ -3,7 +3,7 @@ import { body, query, param } from 'express-validator';
 import { validate, getPaginationParams } from '../middleware/validation';
 import { authenticate, requireRole, deviceAuth } from '../middleware/auth';
 import { successResponse, AppError, paginatedResponse } from '../utils/response';
-import { Device, Child, Guardian, Location } from '../database/associations';
+import { Device, Child, Guardian, Location, Alert, CheckInRecord } from '../database/associations';
 import { Op, Transaction } from 'sequelize';
 import sequelize from '../database';
 
@@ -256,10 +256,20 @@ router.post(
 
       const targetChildId = targetDevice.childId || sourceDevice.childId;
 
-      await Location.update(
+      const locationCount = (await Location.update(
         { deviceId: targetDeviceId },
         { where: { deviceId: sourceDeviceId }, transaction: t }
-      );
+      ))[0];
+
+      const alertCount = (await Alert.update(
+        { deviceId: targetDeviceId },
+        { where: { deviceId: sourceDeviceId }, transaction: t }
+      ))[0];
+
+      const checkInCount = (await CheckInRecord.update(
+        { deviceId: targetDeviceId },
+        { where: { deviceId: sourceDeviceId }, transaction: t }
+      ))[0];
 
       await sourceDevice.update({
         bindStatus: 'merged',
@@ -278,9 +288,16 @@ router.post(
 
       return successResponse(res, {
         sourceDevice: sourceDevice.id,
+        sourceDeviceCode: sourceDevice.deviceId,
         targetDevice: targetDevice.id,
-        message: '设备合并成功，历史定位数据已迁移'
-      }, '设备合并成功');
+        targetDeviceCode: targetDevice.deviceId,
+        migratedRecords: {
+          locations: locationCount,
+          alerts: alertCount,
+          checkInRecords: checkInCount,
+          total: locationCount + alertCount + checkInCount
+        }
+      }, '设备合并成功，定位/告警/打卡记录已全部迁移');
     } catch (error) {
       await t.rollback();
       next(error);

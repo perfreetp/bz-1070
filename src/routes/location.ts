@@ -14,7 +14,7 @@ router.post(
   deviceAuth,
   validate([
     body('deviceId').notEmpty().withMessage('设备ID不能为空'),
-    body('childId').isUUID().withMessage('儿童ID不能为空'),
+    body('childId').optional(),
     body('latitude').isFloat({ min: -90, max: 90 }).withMessage('纬度无效'),
     body('longitude').isFloat({ min: -180, max: 180 }).withMessage('经度无效'),
     body('batteryLevel').optional().isInt({ min: 0, max: 100 }),
@@ -24,7 +24,13 @@ router.post(
     try {
       const location = await LocationService.reportLocation(req.body);
       return successResponse(res, location, '位置上报成功', 201);
-    } catch (error) {
+    } catch (error: any) {
+      if (error.message && error.message.includes('设备不存在')) {
+        return next(new AppError(error.message, 404, 'DEVICE_NOT_FOUND'));
+      }
+      if (error.message && error.message.includes('未绑定儿童')) {
+        return next(new AppError(error.message, 400, 'DEVICE_UNBOUND'));
+      }
       next(error);
     }
   }
@@ -44,10 +50,14 @@ router.get(
         if (!canView) throw new AppError('无权限查看此儿童位置', 403);
       }
 
-      const location = await LocationService.getLatestLocation(req.params.childId);
-      if (!location) return successResponse(res, null, '暂无位置数据');
+      const result = await LocationService.getLatestLocationWithStatus(req.params.childId);
 
-      return successResponse(res, location);
+      return successResponse(res, {
+        status: result.status,
+        message: result.message,
+        location: result.location,
+        device: result.device
+      }, result.message);
     } catch (error) {
       next(error);
     }

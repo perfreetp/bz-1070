@@ -6,6 +6,15 @@ import { successResponse, AppError, paginatedResponse } from '../utils/response'
 import { Guardian, User, Child } from '../database/associations';
 import { Op } from 'sequelize';
 import { hashPassword } from '../utils/auth';
+import * as crypto from 'crypto';
+
+function generatePickupQrCode(childId: string, userId: string): string {
+  const timestamp = Date.now().toString(36);
+  const random = crypto.randomBytes(4).toString('hex');
+  const childPart = childId.split('-')[0];
+  const userPart = userId.split('-')[0];
+  return `PICK-${childPart}-${userPart}-${timestamp}${random}`.toUpperCase();
+}
 
 const router = Router();
 
@@ -121,35 +130,57 @@ router.post(
 
       if (existing) {
         if (existing.status === 'revoked') {
+          const pickupEnabled = canPickup || existing.canPickup;
+          const newQrCode = pickupEnabled
+            ? (existing.pickupQrCode || generatePickupQrCode(childId, user.id))
+            : existing.pickupQrCode;
+
           await existing.update({
             status: 'active',
             relation,
-            canPickup: canPickup || false,
+            canPickup: pickupEnabled,
             canReceiveAlerts: canReceiveAlerts !== false,
             canViewLocation: canViewLocation !== false,
             expiresAt,
-            authorizedBy: req.user!.userId
+            authorizedBy: req.user!.userId,
+            pickupQrCode: newQrCode
           });
-          return successResponse(res, existing, '授权关系已恢复');
+
+          return successResponse(res, {
+            guardian: existing,
+            pickupQrCode: pickupEnabled ? newQrCode : undefined,
+            pickupEnabled
+          }, pickupEnabled ? '授权关系已恢复，已生成接送二维码' : '授权关系已恢复');
         }
         throw new AppError('该用户已被授权', 400);
       }
+
+      const isPickupEnabled = canPickup || false;
+      const pickupQrCodeValue = isPickupEnabled ? generatePickupQrCode(childId, user.id) : undefined;
 
       const guardian = await Guardian.create({
         childId,
         userId: user.id,
         relation,
         isPrimary: false,
-        canPickup: canPickup || false,
+        canPickup: isPickupEnabled,
         canReceiveAlerts: canReceiveAlerts !== false,
         canViewLocation: canViewLocation !== false,
         canManage: false,
         status: 'active',
         expiresAt,
-        authorizedBy: req.user!.userId
+        authorizedBy: req.user!.userId,
+        pickupQrCode: pickupQrCodeValue
       });
 
-      return successResponse(res, guardian, '授权成功', 201);
+      return successResponse(res, {
+        guardian,
+        pickupQrCode: pickupQrCodeValue,
+        pickupEnabled: isPickupEnabled,
+        hint: isPickupEnabled
+          ? '已为该亲友生成接送二维码，请将此码告知对方或在家长App中展示，门禁扫码即可核验接送身份'
+          : undefined
+      }, '授权成功', 201);
     } catch (error) {
       next(error);
     }
@@ -168,46 +199,103 @@ router.post(
     try {
       const { childId, guardianId, qrCode, phone } = req.body;
 
-      let where: any = { childId, status: 'active', canPickup: true };
+      let where: any = { childId, status: 'active' };
       if (guardianId) where.id = guardianId;
       if (qrCode) where.pickupQrCode = qrCode;
 
-      let guardian = await Guardian.findOne({
-        where,
-        include: [{ association: 'user', attributes: ['id', 'realName', 'phone', 'avatar'] }]
-      });
+      let matchReason = '';
+      let guardian = null;
+
+      if (qrCode) {
+        guardian = await Guardian.findOne({
+          where: { childId, status: 'active', pickupQrCode: qrCode },
+          include: [{ association: 'user', attributes: ['id', 'realName', 'phone', 'avatar'] }]
+        });
+        if (guardian) matchReason = '接送二维码匹配成功';
+      }
+
+      if (!guardian && guardianId) {
+        guardian = await Guardian.findOne({
+          where: { ...where, canPickup: true },
+          include: [{ association: 'user', attributes: ['id', 'realName', 'phone', 'avatar'] }]
+        });
+        if (guardian) matchReason = '授权ID匹配成功';
+      }
 
       if (!guardian && phone) {
         const user = await User.findOne({ where: { phone } });
         if (user) {
           guardian = await Guardian.findOne({
-            where: { childId, userId: user.id, status: 'active', canPickup: true },
+            where: { childId, userId: user.id, status: 'active' },
             include: [{ association: 'user', attributes: ['id', 'realName', 'phone', 'avatar'] }]
           });
+          if (guardian && guardian.canPickup) {
+            matchReason = '手机号匹配成功';
+          } else if (guardian && !guardian.canPickup) {
+            return successResponse(res, {
+              authorized: false,
+              reason: 'NO_PICKUP_PERMISSION',
+              message: '该人员已被授权但未开启接送权限，请家长在App中为其开启接送权限',
+              guardian: guardian ? {
+                id: guardian.id,
+                relation: guardian.relation,
+                user: (guardian as any).user
+              } : null
+            });
+          }
         }
       }
 
       if (!guardian) {
         return successResponse(res, {
           authorized: false,
-          message: '该人员无接送权限'
+          reason: 'NOT_FOUND',
+          message: qrCode
+            ? '二维码无效或已失效，请确认是否为该儿童最新接送码，或请家长重新生成'
+            : '未找到匹配的接送授权，请联系家长添加接送权限',
+          hint: qrCode
+            ? '提示：接送二维码为一次性且与儿童绑定，不同儿童接送码不同'
+            : '提示：家长可在家长App → 亲友管理 → 为亲友开启接送权限并获取接送二维码'
+        });
+      }
+
+      if (!guardian.canPickup) {
+        return successResponse(res, {
+          authorized: false,
+          reason: 'NO_PICKUP_PERMISSION',
+          message: '该人员已被授权但未开启接送权限，请家长在App中为其开启',
+          guardian: {
+            id: guardian.id,
+            relation: guardian.relation,
+            user: (guardian as any).user
+          }
         });
       }
 
       if (guardian.expiresAt && new Date(guardian.expiresAt) < new Date()) {
         return successResponse(res, {
           authorized: false,
-          message: '接送授权已过期'
+          reason: 'EXPIRED',
+          message: `接送授权已于 ${new Date(guardian.expiresAt).toLocaleString('zh-CN')} 过期`,
+          guardian: {
+            id: guardian.id,
+            relation: guardian.relation,
+            user: (guardian as any).user
+          }
         });
       }
 
       return successResponse(res, {
         authorized: true,
+        verifiedBy: matchReason,
         guardian: {
           id: guardian.id,
           relation: guardian.relation,
+          pickupQrCode: guardian.pickupQrCode,
+          expiresAt: guardian.expiresAt,
           user: (guardian as any).user
         },
+        child: { id: childId },
         message: '接送权限验证通过'
       });
     } catch (error) {
@@ -235,8 +323,63 @@ router.put(
         throw new AppError('不能取消主监护人身份', 400);
       }
 
-      await guardian.update(req.body);
-      return successResponse(res, guardian, '授权信息更新成功');
+      const updateData = { ...req.body };
+
+      if (updateData.canPickup === true && !guardian.pickupQrCode) {
+        updateData.pickupQrCode = generatePickupQrCode(guardian.childId, guardian.userId);
+      }
+
+      if (updateData.canPickup === false) {
+        updateData.pickupQrCode = undefined;
+      }
+
+      await guardian.update(updateData);
+
+      return successResponse(res, {
+        guardian,
+        pickupQrCode: updateData.canPickup ? (guardian.pickupQrCode || updateData.pickupQrCode) : undefined,
+        hint: updateData.canPickup && updateData.pickupQrCode
+          ? '已为该亲友开启接送权限并生成接送二维码'
+          : undefined
+      }, '授权信息更新成功');
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+router.post(
+  '/:id/refresh-pickup-code',
+  validate([param('id').isUUID()]),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const guardian = await Guardian.findByPk(req.params.id, {
+        include: [{ association: 'user', attributes: ['id', 'realName', 'phone'] }]
+      });
+      if (!guardian) throw new AppError('授权关系不存在', 404);
+
+      if (req.user!.role === 'parent') {
+        const isManager = await Guardian.findOne({
+          where: { childId: guardian.childId, userId: req.user!.userId, status: 'active', canManage: true }
+        });
+        if (!isManager) throw new AppError('无权限刷新此接送码', 403);
+      }
+
+      if (!guardian.canPickup) {
+        throw new AppError('该亲友未开启接送权限，请先开启后再生成接送码', 400, 'PICKUP_DISABLED');
+      }
+
+      const newQrCode = generatePickupQrCode(guardian.childId, guardian.userId);
+      await guardian.update({ pickupQrCode: newQrCode });
+
+      return successResponse(res, {
+        guardianId: guardian.id,
+        oldPickupQrCode: guardian.pickupQrCode,
+        newPickupQrCode: newQrCode,
+        user: (guardian as any).user,
+        expiresAt: guardian.expiresAt,
+        hint: '旧接送码已失效，请将新接送码告知亲友或在家长App中重新展示'
+      }, '接送二维码已刷新，旧码已作废');
     } catch (error) {
       next(error);
     }

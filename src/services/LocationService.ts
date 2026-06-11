@@ -24,16 +24,46 @@ export interface ReportLocationParams {
 }
 
 export class LocationService {
+  private static async resolveDevice(deviceIdentifier: string): Promise<Device> {
+    const device = await Device.findOne({
+      where: {
+        [Op.or]: [
+          { id: deviceIdentifier },
+          { deviceId: deviceIdentifier }
+        ]
+      }
+    });
+
+    if (!device) {
+      throw new Error(`设备不存在: ${deviceIdentifier}`);
+    }
+
+    if (device.bindStatus === 'merged' && device.mergedToDeviceId) {
+      const targetDevice = await Device.findByPk(device.mergedToDeviceId);
+      if (targetDevice) return targetDevice;
+    }
+
+    return device;
+  }
+
   static async reportLocation(params: ReportLocationParams): Promise<Location> {
     const t = await sequelize.transaction();
 
     try {
       const reportedAt = params.reportedAt || new Date();
 
+      const device = await this.resolveDevice(params.deviceId);
+      const deviceInternalId = device.id;
+      const childId = params.childId || device.childId;
+
+      if (!childId) {
+        throw new Error('设备未绑定儿童，无法上报位置');
+      }
+
       const location = await Location.create(
         {
-          deviceId: params.deviceId,
-          childId: params.childId,
+          deviceId: deviceInternalId,
+          childId,
           latitude: params.latitude,
           longitude: params.longitude,
           altitude: params.altitude,
@@ -56,13 +86,14 @@ export class LocationService {
           batteryLevel: params.batteryLevel,
           signalStrength: params.signalStrength,
           isCharging: params.isCharging,
-          status: 'online'
+          status: 'online',
+          childId: device.childId || childId
         },
-        { where: { id: params.deviceId }, transaction: t }
+        { where: { id: deviceInternalId }, transaction: t }
       );
 
-      await this.checkGeofences(params.childId, params.deviceId, params.latitude, params.longitude, reportedAt, t);
-      await this.checkLowBattery(params.childId, params.deviceId, params.batteryLevel, t);
+      await this.checkGeofences(childId, deviceInternalId, params.latitude, params.longitude, reportedAt, t);
+      await this.checkLowBattery(childId, deviceInternalId, params.batteryLevel, t);
 
       await t.commit();
       return location;
@@ -70,6 +101,54 @@ export class LocationService {
       await t.rollback();
       throw error;
     }
+  }
+
+  static async getLatestLocationWithStatus(childId: string): Promise<{
+    status: 'no_device' | 'no_data' | 'ok';
+    message: string;
+    location: Location | null;
+    device?: Device | null;
+  }> {
+    const boundDevice = await Device.findOne({
+      where: {
+        childId,
+        bindStatus: 'bound'
+      },
+      order: [['createdAt', 'DESC']]
+    });
+
+    if (!boundDevice) {
+      return {
+        status: 'no_device',
+        message: '该儿童还未绑定设备，请先绑定手表或定位终端',
+        location: null,
+        device: null
+      };
+    }
+
+    const location = await Location.findOne({
+      where: { childId },
+      include: [
+        { association: 'device', attributes: ['id', 'deviceId', 'deviceType', 'status', 'batteryLevel', 'lastOnlineAt'] }
+      ],
+      order: [['reportedAt', 'DESC']]
+    });
+
+    if (!location) {
+      return {
+        status: 'no_data',
+        message: '设备已绑定，但暂未回传位置数据，请确认手表已开机并有网络信号',
+        location: null,
+        device: boundDevice
+      };
+    }
+
+    return {
+      status: 'ok',
+      message: 'success',
+      location,
+      device: boundDevice
+    };
   }
 
   static async getLatestLocation(childId: string): Promise<Location | null> {
